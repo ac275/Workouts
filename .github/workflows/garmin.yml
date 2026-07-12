@@ -1,63 +1,47 @@
-"""Fetch weight, resting HR and overnight HRV from Garmin Connect.
+name: Garmin sync
+on:
+  schedule:
+    # GitHub cron is UTC-only. Two triggers + a London-time gate below
+    # = runs once at ~07:30 UK time all year (GMT and BST).
+    - cron: "30 6 * * *"
+    - cron: "30 7 * * *"
+  workflow_dispatch: {}     # manual "Run workflow" button
 
-Runs in GitHub Actions. Uses the community `garminconnect` library
-(unofficial - it can break when Garmin changes things; rerun or update then).
-Writes garmin.json at the repo root: [{date, weight, rhr, hrv}, ...] (last 30 days).
-"""
-import datetime as dt
-import json
-import os
-import sys
+permissions:
+  contents: write
 
-from garminconnect import Garmin
-
-EMAIL = os.environ["GARMIN_EMAIL"]
-PASSWORD = os.environ["GARMIN_PASSWORD"]
-DAYS = 30
-
-def main() -> None:
-    api = Garmin(EMAIL, PASSWORD)
-    api.login()
-
-    today = dt.date.today()
-    rows = {}
-    for i in range(DAYS):
-        d = today - dt.timedelta(days=i)
-        iso = d.isoformat()
-        rows[iso] = {"date": iso}
-
-        try:  # resting HR
-            hr = api.get_heart_rates(iso)
-            v = hr.get("restingHeartRate")
-            if v:
-                rows[iso]["rhr"] = int(v)
-        except Exception as e:
-            print("rhr", iso, e, file=sys.stderr)
-
-        try:  # overnight HRV (Garmin 'hrv status' - lastNightAvg, ms)
-            hrv = api.get_hrv_data(iso)
-            v = (hrv or {}).get("hrvSummary", {}).get("lastNightAvg")
-            if v:
-                rows[iso]["hrv"] = int(v)
-        except Exception as e:
-            print("hrv", iso, e, file=sys.stderr)
-
-    try:  # weight (smart scale / manual entries), spread onto their dates
-        start = (today - dt.timedelta(days=DAYS)).isoformat()
-        wc = api.get_body_composition(start, today.isoformat())
-        for entry in (wc or {}).get("dateWeightList", []):
-            iso = entry.get("calendarDate")
-            grams = entry.get("weight")
-            if iso in rows and grams:
-                rows[iso]["weight"] = round(grams / 1000.0, 1)
-    except Exception as e:
-        print("weight", e, file=sys.stderr)
-
-    out = [r for r in rows.values() if len(r) > 1]
-    out.sort(key=lambda r: r["date"])
-    with open("garmin.json", "w") as f:
-        json.dump(out, f, indent=1)
-    print(f"wrote garmin.json with {len(out)} days")
-
-if __name__ == "__main__":
-    main()
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate to 07:xx UK time (skip the other trigger)
+        id: gate
+        run: |
+          H=$(TZ=Europe/London date +%H)
+          echo "London hour: $H"
+          if [ "$H" = "07" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "go=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=no" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'yes'
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.go == 'yes'
+        with:
+          python-version: "3.12"
+      - if: steps.gate.outputs.go == 'yes'
+        run: pip install garminconnect
+      - if: steps.gate.outputs.go == 'yes'
+        run: python scripts/garmin_fetch.py
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      - name: Commit garmin.json
+        if: steps.gate.outputs.go == 'yes'
+        run: |
+          git config user.name "cabin-log-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add garmin.json
+          git diff --cached --quiet || git commit -m "Garmin sync $(date -u +%F)"
+          git push
