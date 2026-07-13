@@ -42,6 +42,15 @@ def main() -> None:
         except Exception as e:
             print("hrv", iso, e, file=sys.stderr)
 
+        try:  # Garmin Training Readiness (0-100)
+            tr = api.get_training_readiness(iso)
+            if isinstance(tr, list) and tr:
+                v = tr[0].get("score")
+                if v is not None:
+                    rows[iso]["tr"] = int(v)
+        except Exception as e:
+            print("tr", iso, e, file=sys.stderr)
+
     try:  # weight (smart scale / manual entries), spread onto their dates
         start = (today - dt.timedelta(days=DAYS)).isoformat()
         wc = api.get_body_composition(start, today.isoformat())
