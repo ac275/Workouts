@@ -1,11 +1,9 @@
 name: Garmin sync
 on:
   schedule:
-    # GitHub cron is UTC-only. Two triggers + a London-time gate below
-    # = runs once at ~07:30 UK time all year (GMT and BST).
     - cron: "30 6 * * *"
     - cron: "30 7 * * *"
-  workflow_dispatch: {}     # manual "Run workflow" button
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -14,7 +12,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Gate to 07:xx UK time (skip the other trigger)
+      - name: Gate to 07:xx UK time (skip the duplicate trigger)
         id: gate
         run: |
           H=$(TZ=Europe/London date +%H)
@@ -31,17 +29,18 @@ jobs:
         with:
           python-version: "3.12"
       - if: steps.gate.outputs.go == 'yes'
-        run: pip install garminconnect
+        run: pip install garminconnect garth
       - if: steps.gate.outputs.go == 'yes'
         run: python scripts/garmin_fetch.py
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-      - name: Commit garmin.json
-        if: steps.gate.outputs.go == 'yes'
+          GARTH_TOKEN: ${{ secrets.GARTH_TOKEN }}
+      - name: Commit garmin.json even after upstream errors
+        if: always() && steps.gate.outputs.go == 'yes'
         run: |
           git config user.name "cabin-log-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add garmin.json
+          git add garmin.json || true
           git diff --cached --quiet || git commit -m "Garmin sync $(date -u +%F)"
-          git push
+          git push || true
